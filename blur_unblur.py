@@ -1,19 +1,48 @@
+"""
+╔══════════════════════════════════════════════════════════════╗
+║           REVERSIBLE IMAGE BLUR                              ║
+║                                                              ║
+║  HOW IT WORKS                                                ║
+║  ──────────────────────────────────────────────────────────  ║
+║  Regular blur is lossy — you can't undo it.                  ║
+║  This program makes blur reversible by:                      ║
+║                                                              ║
+║    1. Encrypting the original image (AES-256-GCM)            ║
+║    2. Showing a blurred version to anyone without the key    ║
+║    3. Letting authorized users decrypt → get original back   ║
+║                                                              ║
+║  The blurred image is just a visual stand-in.                ║
+║  The real data is always the encrypted original.             ║
+║                                                              ║
+║  USAGE                                                       ║
+║  ──────────────────────────────────────────────────────────  ║
+║  python blur_unblur.py                   → runs the demo     ║
+║                                                              ║
+║  Or import and use directly:                                 ║
+║    from blur_unblur import blur, unblur                      ║
+║    key = blur("photo.jpg", "photo_blurred.jpg",              ║
+║                "photo_encrypted.bin")                        ║
+║    unblur("photo_blurred.jpg", "photo_encrypted.bin",        ║
+║            "photo_restored.jpg", key)                        ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+
 import os
 import json
 import base64
 import secrets
 import hashlib
 from pathlib import Path
- 
+
 from PIL import Image, ImageFilter
 import numpy as np
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
- 
- 
+
+
 # ─────────────────────────────────────────────────────────────
 # CORE FUNCTIONS
 # ─────────────────────────────────────────────────────────────
- 
+
 def blur(
     input_path: str,
     blurred_path: str,
@@ -22,21 +51,21 @@ def blur(
 ) -> bytes:
     """
     Blur an image and encrypt the original for later recovery.
- 
+
     Steps:
       1. Read the original image.
       2. Apply a strong Gaussian blur → save as blurred_path.
       3. Encrypt the original bytes with AES-256-GCM.
       4. Save the encrypted bundle to encrypted_path.
       5. Return the 32-byte key (keep this safe — it's the only way back).
- 
+
     Args:
         input_path:     Path to the source image.
         blurred_path:   Where to save the blurred (public) version.
         encrypted_path: Where to save the encrypted original.
         blur_radius:    Gaussian blur radius. Higher = more blurred.
                         20 is strong enough that no details are visible.
- 
+
     Returns:
         key (bytes): 32-byte AES key. Store this securely.
                      Without it the original cannot be recovered.
@@ -45,20 +74,20 @@ def blur(
     original_image = Image.open(input_path)
     original_bytes = Path(input_path).read_bytes()
     print(f"       Size     : {original_image.size[0]}×{original_image.size[1]} px  |  {len(original_bytes):,} bytes")
- 
+
     # ── Step 1: create the blurred version ───────────────────
     blurred_image = original_image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
     blurred_image.save(blurred_path)
     print(f"[BLUR] Blurred  : saved → {blurred_path}  (radius={blur_radius})")
- 
+
     # ── Step 2: generate a random AES-256 key ─────────────────
     key = secrets.token_bytes(32)   # 256 bits
- 
+
     # ── Step 3: encrypt the original image ───────────────────
     iv         = secrets.token_bytes(12)   # 96-bit IV (NIST recommended)
     aesgcm     = AESGCM(key)
     ciphertext = aesgcm.encrypt(iv, original_bytes, b"blur-protect")
- 
+
     # ── Step 4: save the encrypted bundle ────────────────────
     bundle = {
         "algorithm":   "AES-256-GCM",
@@ -73,10 +102,10 @@ def blur(
     print(f"[BLUR] Encrypted: saved → {encrypted_path}")
     print(f"[BLUR] Key      : {key.hex()[:16]}...  (first 8 bytes shown)")
     print(f"[BLUR] ✓ Done. Keep the key safe — it's the only way to unblur.\n")
- 
+
     return key
- 
- 
+
+
 def unblur(
     blurred_path: str,
     encrypted_path: str,
@@ -85,50 +114,50 @@ def unblur(
 ) -> Image.Image:
     """
     Restore the original image using the encryption key.
- 
+
     The blurred image is ignored for recovery — only the
     encrypted bundle + key are needed. The blurred path
     is accepted as a parameter for clarity, but not used
     in the decryption process.
- 
+
     Args:
         blurred_path:   Path to the blurred image (not used in decryption,
                         included so callers see the full picture).
         encrypted_path: Path to the encrypted bundle JSON.
         output_path:    Where to write the restored original.
         key:            The 32-byte AES key returned by blur().
- 
+
     Returns:
         The restored PIL Image object.
- 
+
     Raises:
         cryptography.exceptions.InvalidTag  — wrong key or tampered data.
         FileNotFoundError                   — encrypted bundle not found.
     """
     print(f"\n[UNBLUR] Loading encrypted bundle: {encrypted_path}")
     bundle = json.loads(Path(encrypted_path).read_text())
- 
+
     iv         = base64.b64decode(bundle["iv"])
     ciphertext = base64.b64decode(bundle["ciphertext"])
     aad        = bundle["aad"].encode()
- 
+
     # ── Decrypt ───────────────────────────────────────────────
     aesgcm = AESGCM(key)
     original_bytes = aesgcm.decrypt(iv, ciphertext, aad)
     # ^ raises InvalidTag immediately if the key is wrong or data is tampered
- 
+
     # ── Write and return ──────────────────────────────────────
     Path(output_path).write_bytes(original_bytes)
- 
+
     restored = Image.open(output_path)
     print(f"[UNBLUR] ✓ Decrypted successfully")
     print(f"         GCM tag verified — data is intact and untampered")
     print(f"         Restored {len(original_bytes):,} bytes → {output_path}")
     print(f"         Image: {restored.size[0]}×{restored.size[1]} px\n")
- 
+
     return restored
- 
- 
+
+
 def unblur_wrong_key_demo(encrypted_path: str):
     """
     Show what happens when someone tries the wrong key.
@@ -139,64 +168,71 @@ def unblur_wrong_key_demo(encrypted_path: str):
     bundle     = json.loads(Path(encrypted_path).read_text())
     iv         = base64.b64decode(bundle["iv"])
     ciphertext = base64.b64decode(bundle["ciphertext"])
- 
+
     try:
         AESGCM(wrong_key).decrypt(iv, ciphertext, b"blur-protect")
         print("[DEMO] ✗ FAIL — should not reach here")
     except Exception as e:
         print(f"[DEMO] ✓ Rejected with: {type(e).__name__}")
         print(f"       The blurred image is all an attacker will ever see.\n")
- 
- 
+
+
 # ─────────────────────────────────────────────────────────────
 # DEMO
 # ─────────────────────────────────────────────────────────────
- 
+
 def run_demo():
-    # Find the sample image from the earlier pipeline
-    candidates = [
-        "/home/claude/sample_pii_image.jpg",
-        "/home/claude/pipeline_output/02_redacted.jpg",
-    ]
-    src = next((p for p in candidates if Path(p).exists()), None)
- 
-    if src is None:
-        # Create a simple synthetic image if none found
-        print("[DEMO] No sample image found — creating a synthetic one.")
-        img = Image.new("RGB", (400, 300), color=(240, 230, 210))
-        from PIL import ImageDraw, ImageFont
-        draw = ImageDraw.Draw(img)
-        draw.text((30, 100), "SSN: 523-88-4471", fill=(20, 20, 80))
-        draw.text((30, 140), "Card: 4111 1111 1111 1111", fill=(20, 20, 80))
-        draw.text((30, 180), "PIN: 8842", fill=(20, 20, 80))
-        src = "/tmp/synthetic_demo.jpg"
-        img.save(src)
- 
-    out      = Path("/mnt/user-data/outputs")
+    # Create a synthetic demo image with sample PII data
+    print("[DEMO] Creating a synthetic demo image with sample data...")
+    from PIL import ImageDraw, ImageFont
+    img  = Image.new("RGB", (600, 360), color=(252, 248, 240))
+    draw = ImageDraw.Draw(img)
+    for y in range(55, 340, 30):
+        draw.line([(40, y), (560, y)], fill=(200, 210, 230), width=1)
+    draw.line([(80, 15), (80, 345)], fill=(220, 100, 100), width=2)
+
+    def _font(size):
+        for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                  "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"]:
+            if os.path.exists(p):
+                return ImageFont.truetype(p, size)
+        return ImageFont.load_default()
+
+    draw.text((95, 15),  "SAMPLE RECORD — demo only",   font=_font(17), fill=(180, 30, 30))
+    draw.text((95, 65),  "Name:  Jane Demo",             font=_font(15), fill=(20, 20, 60))
+    draw.text((95, 100), "SSN:   523-88-4471",           font=_font(15), fill=(20, 20, 60))
+    draw.text((95, 135), "Card:  4111 1111 1111 1111",   font=_font(15), fill=(20, 20, 60))
+    draw.text((95, 170), "Phone: (217) 555-0194",        font=_font(15), fill=(20, 20, 60))
+    draw.text((95, 205), "Email: jane@example.com",      font=_font(15), fill=(20, 20, 60))
+    draw.text((95, 240), "PIN:   8842",                  font=_font(15), fill=(20, 20, 60))
+    src = "demo_sample_image.jpg"
+    img.save(src)
+
+    out      = Path(".")
     blurred  = str(out / "blurred.jpg")
     enc      = str(out / "encrypted.bin")
     restored = str(out / "unblurred_restored.jpg")
- 
+
     print("╔══════════════════════════════════════════════════════════════╗")
     print("║             REVERSIBLE BLUR — Demo                          ║")
     print("╚══════════════════════════════════════════════════════════════╝")
     print(f"\nSource image: {src}")
- 
+
     # ── 1. Blur + encrypt ─────────────────────────────────────
     key = blur(src, blurred, enc, blur_radius=25)
- 
+
     # ── 2. Verify wrong key is rejected ───────────────────────
     unblur_wrong_key_demo(enc)
- 
+
     # ── 3. Unblur with correct key ─────────────────────────────
     print("[DEMO] Now unblurring with the CORRECT key...")
     unblur(blurred, enc, restored, key)
- 
+
     # ── 4. Confirm byte-level identity ────────────────────────
     original_hash = hashlib.sha256(Path(src).read_bytes()).hexdigest()
     restored_hash = hashlib.sha256(Path(restored).read_bytes()).hexdigest()
     match = original_hash == restored_hash
- 
+
     print("╔══════════════════════════════════════════════════════════════╗")
     print("║  RESULT                                                      ║")
     print("╠══════════════════════════════════════════════════════════════╣")
@@ -208,7 +244,7 @@ def run_demo():
     print(f"    blurred.jpg            → blurred (public) version")
     print(f"    encrypted.bin          → encrypted original (needs key)")
     print(f"    unblurred_restored.jpg → restored original\n")
- 
- 
+
+
 if __name__ == "__main__":
     run_demo()
